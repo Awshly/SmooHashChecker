@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+VERSION=0.1.0
+usage() {
+cat <<'EOF'
+SmooHashChecker — file checksum utility
+
+Usage:
+  ./SmooHashChecker hash [--algorithm sha256|sha512|sha1|md5] FILE...
+  ./SmooHashChecker verify [--algorithm sha256|sha512|sha1|md5] FILE EXPECTED_HASH
+  ./SmooHashChecker verify-manifest CHECKSUM_FILE
+  ./SmooHashChecker --help | --version
+
+SHA-256 is the default. SHA-1 and MD5 are for legacy compatibility only.
+A matching digest does not prove authenticity unless the reference is trusted.
+EOF
+}
+die(){ echo "Error: $*" >&2; exit 2; }
+(($#)) || { usage; exit 0; }
+case "$1" in --help|-h) usage; exit 0;; --version) echo "SmooHashChecker $VERSION"; exit 0;; esac
+cmd="$1"; shift
+algorithm=sha256
+if [[ "$cmd" == hash || "$cmd" == verify ]]; then
+  if [[ "${1:-}" == --algorithm ]]; then (($# >= 2)) || die "--algorithm requires a value"; algorithm="$2"; shift 2; fi
+  case "$algorithm" in
+    sha256) bin=sha256sum; length=64;;
+    sha512) bin=sha512sum; length=128;;
+    sha1) bin=sha1sum; length=40;;
+    md5) bin=md5sum; length=32;;
+    *) die "Unsupported algorithm: $algorithm";;
+  esac
+  command -v "$bin" >/dev/null || die "Missing dependency: $bin"
+fi
+case "$cmd" in
+  hash)
+    (($#)) || die "Provide at least one file"
+    status=0
+    for file in "$@"; do
+      if [[ ! -f "$file" || ! -r "$file" ]]; then echo "Error: not a readable file: $file" >&2; status=1; continue; fi
+      "$bin" -- "$file"
+    done
+    exit "$status";;
+  verify)
+    (($# == 2)) || die "Usage: verify [--algorithm ALGORITHM] FILE EXPECTED_HASH"
+    file="$1"; expected="${2,,}"
+    [[ -f "$file" && -r "$file" ]] || die "Not a readable file: $file"
+    [[ "$expected" =~ ^[[:xdigit:]]{$length}$ ]] || die "Expected $length hexadecimal characters for $algorithm"
+    actual="$("$bin" -- "$file" | awk '{print $1}')"
+    if [[ "${actual,,}" == "$expected" ]]; then echo "OK: $file matches $algorithm"; else
+      echo "MISMATCH: $file does not match $algorithm" >&2
+      echo "Expected: $expected" >&2; echo "Actual:   $actual" >&2; exit 1
+    fi;;
+  verify-manifest)
+    (($# == 1)) || die "Usage: verify-manifest CHECKSUM_FILE"
+    manifest="$1"; [[ -r "$manifest" ]] || die "Cannot read manifest: $manifest"
+    if grep -Eq '^[[:xdigit:]]{64}[[:space:]][ *].+' "$manifest"; then bin=sha256sum
+    elif grep -Eq '^[[:xdigit:]]{128}[[:space:]][ *].+' "$manifest"; then bin=sha512sum
+    else die "Expected a standard SHA-256 or SHA-512 checksum manifest"; fi
+    "$bin" --check --strict -- "$manifest";;
+  *) usage >&2; exit 2;;
+esac
